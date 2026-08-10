@@ -88,6 +88,9 @@ function mapPrismaUser(u: any): User {
     createdAt: u.createdAt instanceof Date ? u.createdAt.toISOString() : u.createdAt,
     lastLogin: u.lastLogin ? (u.lastLogin instanceof Date ? u.lastLogin.toISOString() : u.lastLogin) : undefined,
     department: u.department ?? undefined,
+    businessUnitId: u.businessUnitId ?? undefined,
+    businessUnitName: u.businessUnit?.name ?? undefined,
+    businessUnitType: u.businessUnit?.type as any,
   };
 }
 
@@ -565,11 +568,11 @@ app.put('/api/users/:id', async (req, res) => {
       where: { id },
       data: {
         ...(name && { name }),
-        ...(email && { email }),
+        ...(email && { email: email.toLowerCase() }),
         ...(role && { role }),
         ...(status && { status }),
         ...(department !== undefined && { department }),
-        ...(businessUnitId !== undefined && { businessUnitId }),
+        ...(businessUnitId !== undefined && { businessUnitId: businessUnitId === '' ? null : businessUnitId }),
       },
     });
     await addAuditLog('admin', 'Administrador', 'admin', 'Usuário Atualizado', `Atualizadas informações do usuário ${updated.name} (${updated.email}).`);
