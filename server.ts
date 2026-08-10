@@ -1,14 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { EPIItem, User, Movement, AuditLog, EmailNotification, EPIStatus } from '../frontend/src/types';
-import { getStockAlertType } from '../frontend/src/lib/notifications';
 import { getDatabaseStatus, getPrismaClient } from './prisma-client.js';
+import { getStockAlertType } from './notification-utils.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(new URL(import.meta.url).pathname);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
