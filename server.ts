@@ -537,7 +537,7 @@ app.post('/api/users', async (req, res) => {
       data: {
         name,
         email: email.toLowerCase(),
-        password: 'demo123',
+        password: 'formulaplus',
         role,
         status: 'active',
         department: department || 'Operacional',
