@@ -516,7 +516,10 @@ app.get('/api/users', async (_req, res) => {
   }
 
   try {
-    const dbUsers = await prisma.user.findMany({ orderBy: { createdAt: 'desc' } });
+    const dbUsers = await prisma.user.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { businessUnit: true },
+    });
     return res.json(dbUsers.map(mapPrismaUser));
   } catch (err) {
     console.error('Erro ao buscar usuários:', err);
