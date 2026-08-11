@@ -222,7 +222,7 @@ async function triggerEmailNotification(epi: EPIItem, previousQty: number) {
   let subject = '';
   let body = '';
 
-  let recipientEmail = "farmaceutica@formulaplusrj.com.br";
+  let recipientEmail = process.env.RESEND_TO_EMAIL || 'farmaceutica@formulaplusrj.com.br';
 
   if (type === 'out_of_stock') {
     subject = `🚨 URGENTE: Produto Esgotado - ${epi.name}`;
