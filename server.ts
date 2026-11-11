@@ -1,11 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
 import { getDatabaseStatus, getPrismaClient } from './prisma-client.js';
 import { getStockAlertType } from './notification-utils.js';
 
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -215,14 +216,13 @@ async function sendResendEmail(to: string, subject: string, textBody: string) {
   }
 }
 
-
 // Utility to trigger auto-email notification
 async function triggerEmailNotification(epi: EPIItem, previousQty: number) {
   const type = getStockAlertType(epi.currentQty, previousQty, epi.minQty);
   let subject = '';
   let body = '';
 
-  let recipientEmail = process.env.RESEND_TO_EMAIL || 'farmaceutica@formulaplusrj.com.br';
+  let recipientEmail = process.env.RESEND_TO_EMAIL || 'formulaplus.developer@gmail.com';
 
   if (type === 'out_of_stock') {
     subject = `🚨 URGENTE: Produto Esgotado - ${epi.name}`;
@@ -258,6 +258,8 @@ async function triggerEmailNotification(epi: EPIItem, previousQty: number) {
     await addAuditLog('system', 'Sistema de Notificações', 'admin', `Notificação Enviada (${type})`, `Disparado e-mail para ${recipientEmail}: ${subject}`);
   }
 }
+
+
 
 // =================== API ROUTES ===================
 
@@ -490,6 +492,17 @@ app.post('/api/auth/recover-password', async (req, res) => {
     tokenDemo: token,
   });
 });
+
+
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+
 
 app.post('/api/auth/reset-password', async (req, res) => {
   const { token, newPassword } = req.body;
@@ -737,6 +750,196 @@ app.delete('/api/epis/:id', async (req, res) => {
   } catch (err: any) {
     if (err?.code === 'P2025') return res.status(404).json({ error: 'EPI não encontrado.' });
     return res.status(500).json({ error: 'Erro ao excluir EPI do banco.' });
+  }
+});
+
+// =================== MATÉRIAS-PRIMAS ===================
+
+const formulaStorageLocations = new Set([
+  ...Array.from({ length: 7 }, (_, index) => `ARM ${String(index + 1).padStart(2, '0')}`),
+  ...Array.from({ length: 7 }, (_, index) => `CX ${String(index + 1).padStart(2, '0')}`),
+]);
+
+function mapPrismaFormulaRetirada(item: any) {
+  return {
+    id: item.id,
+    name: item.name,
+    manufacturer: item.manufacturer ?? undefined,
+    currentQty: item.currentQty,
+    unit: item.unit ?? 'un',
+    notes: item.notes ?? undefined,
+    location: item.location,
+    updatedAt: item.updatedAt instanceof Date ? item.updatedAt.toISOString() : item.updatedAt,
+  };
+}
+
+function mapPrismaFormulaMovement(movement: any) {
+  return {
+    id: movement.id,
+    formulaId: movement.formulaId,
+    formulaName: movement.formulaName,
+    type: movement.type,
+    quantity: movement.quantity,
+    responsibleId: movement.responsibleId ?? undefined,
+    responsibleName: movement.responsibleName,
+    recipient: movement.recipient ?? undefined,
+    reason: movement.reason ?? undefined,
+    notes: movement.notes ?? undefined,
+    date: movement.date instanceof Date ? movement.date.toISOString() : movement.date,
+  };
+}
+
+app.get('/api/formulas-retiradas', async (_req, res) => {
+  if (!useDatabase || !prisma) return res.status(503).json({ error: 'Banco de dados não configurado.' });
+
+  try {
+    const items = await prisma.formulaRetirada.findMany({ orderBy: { name: 'asc' } });
+    return res.json(items.map(mapPrismaFormulaRetirada));
+  } catch (err) {
+    console.error('Erro ao buscar matérias-primas:', err);
+    if ((err as any)?.code === 'P2021') return res.status(503).json({ error: 'A tabela de matérias-primas não existe no banco. Aplique a migration 20261014120000_create_formula_retirada.' });
+    return res.status(500).json({ error: 'Erro ao buscar matérias-primas do banco.' });
+  }
+});
+
+app.post('/api/formulas-retiradas', async (req, res) => {
+  const { name, manufacturer, currentQty, unit = 'un', notes, location, userId, userName, userRole } = req.body;
+  const quantity = Number(currentQty);
+  if (!name?.trim() || !unit?.trim() || !formulaStorageLocations.has(location) || !Number.isInteger(quantity) || quantity < 0) {
+    return res.status(400).json({ error: 'Informe nome, unidade de medida, quantidade válida e um armazenamento entre ARM 01-07 ou CX 01-07.' });
+  }
+  if (!useDatabase || !prisma) return res.status(503).json({ error: 'Banco de dados não configurado.' });
+
+  try {
+    const item = await prisma.formulaRetirada.create({
+      data: { name: name.trim(), manufacturer: manufacturer?.trim() || null, currentQty: quantity, unit: unit.trim(), notes: notes?.trim() || null, location },
+    });
+    await addAuditLog(userId || 'admin', userName || 'Usuário', userRole || 'admin', 'Cadastro de Matéria-prima', `Cadastrada a matéria-prima ${item.name} com estoque de ${item.currentQty}.`);
+    return res.status(201).json(mapPrismaFormulaRetirada(item));
+  } catch (err) {
+    console.error('Erro ao criar matéria-prima:', err);
+    if ((err as any)?.code === 'P2021') return res.status(503).json({ error: 'A tabela de matérias-primas não existe no banco. Aplique a migration 20261014120000_create_formula_retirada.' });
+    return res.status(500).json({ error: 'Erro ao cadastrar matéria-prima no banco.' });
+  }
+});
+
+app.put('/api/formulas-retiradas/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, manufacturer, currentQty, unit, notes, location, userId, userName, userRole } = req.body;
+  if ((name !== undefined && !name?.trim()) || (unit !== undefined && !unit?.trim()) || (location !== undefined && !formulaStorageLocations.has(location)) ||
+      (currentQty !== undefined && (!Number.isInteger(Number(currentQty)) || Number(currentQty) < 0))) {
+    return res.status(400).json({ error: 'Dados inválidos. Verifique nome, quantidades e armazenamento.' });
+  }
+  if (!useDatabase || !prisma) return res.status(503).json({ error: 'Banco de dados não configurado.' });
+
+  try {
+    const item = await prisma.formulaRetirada.update({
+      where: { id },
+      data: {
+        ...(name !== undefined && { name: name.trim() }),
+        ...(manufacturer !== undefined && { manufacturer: manufacturer?.trim() || null }),
+        ...(currentQty !== undefined && { currentQty: Number(currentQty) }),
+        ...(unit !== undefined && { unit: unit.trim() }),
+        ...(notes !== undefined && { notes: notes?.trim() || null }),
+        ...(location !== undefined && { location }),
+      },
+    });
+    await addAuditLog(userId || 'admin', userName || 'Usuário', userRole || 'admin', 'Edição de Matéria-prima', `Alterada a matéria-prima ${item.name}. Quantidade: ${item.currentQty}.`);
+    return res.json(mapPrismaFormulaRetirada(item));
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Matéria-prima não encontrada.' });
+    if (err?.code === 'P2021') return res.status(503).json({ error: 'A tabela de matérias-primas não existe no banco. Aplique a migration 20261014120000_create_formula_retirada.' });
+    console.error('Erro ao atualizar matéria-prima:', err);
+    return res.status(500).json({ error: 'Erro ao atualizar matéria-prima no banco.' });
+  }
+});
+
+app.delete('/api/formulas-retiradas/:id', async (req, res) => {
+  const { id } = req.params;
+  const { userId, userName, userRole } = req.query;
+  if (!useDatabase || !prisma) return res.status(503).json({ error: 'Banco de dados não configurado.' });
+
+  try {
+    const item = await prisma.formulaRetirada.delete({ where: { id } });
+    await addAuditLog((userId as string) || 'admin', (userName as string) || 'Administrador', (userRole as any) || 'admin', 'Exclusão de Matéria-prima', `Excluída a matéria-prima ${item.name}.`);
+    return res.json({ success: true, message: 'Matéria-prima excluída com sucesso.' });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Matéria-prima não encontrada.' });
+    if (err?.code === 'P2021') return res.status(503).json({ error: 'A tabela de matérias-primas não existe no banco. Aplique a migration 20261014120000_create_formula_retirada.' });
+    if (err?.code === 'P2003') return res.status(409).json({ error: 'Não é possível excluir uma matéria-prima que possui movimentações no histórico.' });
+    console.error('Erro ao excluir matéria-prima:', err);
+    return res.status(500).json({ error: 'Erro ao excluir matéria-prima do banco.' });
+  }
+});
+
+app.get('/api/formulas-retiradas/movements', async (_req, res) => {
+  if (!useDatabase || !prisma) return res.status(503).json({ error: 'Banco de dados não configurado.' });
+
+  try {
+    const movements = await prisma.formulaMovement.findMany({ orderBy: { date: 'desc' } });
+    return res.json(movements.map(mapPrismaFormulaMovement));
+  } catch (err) {
+    console.error('Erro ao buscar movimentações de matérias-primas:', err);
+    return res.status(500).json({ error: 'Erro ao buscar movimentações de matérias-primas.' });
+  }
+});
+
+app.post('/api/formulas-retiradas/movements', async (req, res) => {
+  const { formulaId, type, quantity, responsibleId, responsibleName, responsibleRole, reason, recipient, notes } = req.body;
+  const numQty = Number(quantity);
+  if (!formulaId || !['entrada', 'saida'].includes(type) || !Number.isInteger(numQty) || numQty <= 0) {
+    return res.status(400).json({ error: 'Matéria-prima, tipo e quantidade inteira maior que zero são obrigatórios.' });
+  }
+  if (!useDatabase || !prisma) return res.status(503).json({ error: 'Banco de dados não configurado.' });
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.formulaRetirada.updateMany({
+        where: { id: formulaId, ...(type === 'saida' ? { currentQty: { gte: numQty } } : {}) },
+        data: { currentQty: type === 'entrada' ? { increment: numQty } : { decrement: numQty } },
+      });
+
+      if (!updated.count) {
+        const exists = await tx.formulaRetirada.findUnique({ where: { id: formulaId }, select: { id: true, name: true, currentQty: true } });
+        return exists
+          ? { error: `Estoque insuficiente de ${exists.name}: saldo ${exists.currentQty}, retirada solicitada ${numQty}.` }
+          : { error: 'Matéria-prima não encontrada.' };
+      }
+
+      const formula = await tx.formulaRetirada.findUniqueOrThrow({ where: { id: formulaId } });
+      const movement = await tx.formulaMovement.create({
+        data: {
+          formulaId: formula.id,
+          formulaName: formula.name,
+          type,
+          quantity: numQty,
+          responsibleId: responsibleId || null,
+          responsibleName: responsibleName || 'Operador do Sistema',
+          reason: reason || (type === 'entrada' ? 'Reposição de estoque' : 'Retirada de matéria-prima'),
+          recipient: recipient || null,
+          notes: notes || null,
+        },
+      });
+      return { formula, movement };
+    });
+
+    if ('error' in result) {
+      return res.status(result.error === 'Matéria-prima não encontrada.' ? 404 : 400).json({ error: result.error });
+    }
+
+    const action = type === 'entrada' ? 'Entrada de Matéria-prima' : 'Retirada de Matéria-prima';
+    await addAuditLog(
+      responsibleId || 'user', responsibleName || 'Usuário', responsibleRole || 'operador', action,
+      `${type.toUpperCase()}: ${numQty} unidade(s) de ${result.formula.name}. Saldo atualizado para ${result.formula.currentQty}.`,
+    );
+
+    return res.status(201).json({
+      movement: mapPrismaFormulaMovement(result.movement),
+      updatedFormula: mapPrismaFormulaRetirada(result.formula),
+    });
+  } catch (err) {
+    console.error('Erro ao criar movimentação de matéria-prima:', err);
+    return res.status(500).json({ error: 'Erro ao registrar movimentação de matéria-prima.' });
   }
 });
 
